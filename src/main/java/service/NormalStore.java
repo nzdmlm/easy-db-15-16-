@@ -24,8 +24,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
-import java.util.TreeMap;
+import java.util.*;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.jar.JarEntry;
@@ -67,7 +66,7 @@ public class NormalStore implements Store {
     /**
      * 持久化阈值
      */
-//    private final int storeThreshold;
+    private final int storeThreshold = 100;
 
     public NormalStore(String dataDir) {
         this.dataDir = dataDir;
@@ -95,7 +94,7 @@ public class NormalStore implements Store {
             long start = 0;
             file.seek(start);
             while (start < len) {
-                int cmdLen = file.readInt();
+                int cmdLen = file.readInt();//从文件读取4个字节，返回4字节32位的数据
                 byte[] bytes = new byte[cmdLen];
                 file.read(bytes);
                 JSONObject value = JSON.parseObject(new String(bytes, StandardCharsets.UTF_8));
@@ -122,14 +121,40 @@ public class NormalStore implements Store {
             // 加锁
             indexLock.writeLock().lock();
             // TODO://先写内存表，内存表达到一定阀值再写进磁盘
-            // 写table（wal）文件
-            RandomAccessFileUtil.writeInt(this.genFilePath(), commandBytes.length);
-            int pos = RandomAccessFileUtil.write(this.genFilePath(), commandBytes);
+
+            //添加
+            //内存表缓存设置为100条数据
+            if(memTable.size() < storeThreshold){
+                memTable.put(key, command);
+            }
+            //截至
+
+            // 写table（wal）日志文件
+            RandomAccessFileUtil.writeInt(this.genFilePath(), commandBytes.length);//先写命令数据长度
+            int pos = RandomAccessFileUtil.write(this.genFilePath(), commandBytes);//再写具体命令
             // 保存到memTable
             // 添加索引
             CommandPos cmdPos = new CommandPos(pos, commandBytes.length);
             index.put(key, cmdPos);
             // TODO://判断是否需要将内存表中的值写回table
+
+            //添加
+            Set<String> set = memTable.keySet();
+            if(memTable.size() == storeThreshold){
+                for(String i : set){//i为key
+                    SetCommand command1 = (SetCommand) memTable.get(i);
+                    byte[] commandBytes1 = JSONObject.toJSONBytes(command);
+
+                    RandomAccessFileUtil.writeInt(this.genFilePath(), commandBytes1.length);
+                    int pos1 = RandomAccessFileUtil.write(this.genFilePath(), commandBytes1);
+
+                    CommandPos cmdPos1 = new CommandPos(pos1, commandBytes1.length);
+                    index.put(i, cmdPos1);
+                }
+                memTable.clear();
+            }
+            //截至
+
         } catch (Throwable t) {
             throw new RuntimeException(t);
         } finally {
@@ -174,6 +199,13 @@ public class NormalStore implements Store {
             indexLock.writeLock().lock();
             // TODO://先写内存表，内存表达到一定阀值再写进磁盘
 
+            //添加
+            //内存表缓存设置为100条数据
+            if(memTable.size() < storeThreshold){
+                memTable.put(key, command);
+            }
+            //截至
+
             // 写table（wal）文件
             int pos = RandomAccessFileUtil.write(this.genFilePath(), commandBytes);
             // 保存到memTable
@@ -183,6 +215,22 @@ public class NormalStore implements Store {
             index.put(key, cmdPos);
 
             // TODO://判断是否需要将内存表中的值写回table
+
+            //添加
+            Set<String> set = memTable.keySet();
+            if(memTable.size() == storeThreshold){
+                for(String i : set){//i为key
+                    SetCommand command1 = (SetCommand) memTable.get(i);
+                    byte[] commandBytes1 = JSONObject.toJSONBytes(command);
+
+                    int pos1 = RandomAccessFileUtil.write(this.genFilePath(), commandBytes1);
+
+                    CommandPos cmdPos1 = new CommandPos(pos1, commandBytes1.length);
+                    index.put(i, cmdPos1);
+                }
+                memTable.clear();
+            }
+            //截至
 
         } catch (Throwable t) {
             throw new RuntimeException(t);
