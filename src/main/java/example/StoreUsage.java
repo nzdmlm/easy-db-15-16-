@@ -13,7 +13,7 @@ import java.io.File;
 
 public class StoreUsage {
     public static void main(String[] args) {
-        String dataDir="data"+ File.separator;
+        String dataDir="data"+ File.separator;//在data/目录下
         NormalStore store = new NormalStore(dataDir);
 //        store.set("zsy1","1");
 //        store.set("zsy2","2");

@@ -8,9 +8,13 @@
 package client;
 
 public interface Client {
+
+    //增加和修改
     void set(String key, String value);
 
+    //查询
     String get(String key);
 
+    //删除
     void rm(String key);
 }
