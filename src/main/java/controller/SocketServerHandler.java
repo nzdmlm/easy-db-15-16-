@@ -8,11 +8,9 @@
 package controller;
 
 import dto.ActionDTO;
-import dto.ActionTypeEnum;
-import dto.RespDTO;
-import dto.RespStatusTypeEnum;
-import service.NormalStore;
+import model.command.CommandHandlerFactory;
 import service.Store;
+import model.command.CommandHandler;
 import utils.LoggerUtil;
 
 import java.io.*;
@@ -43,23 +41,9 @@ public class SocketServerHandler implements Runnable {
             System.out.println("" + dto.toString());
 
             // 处理命令逻辑(TODO://改成可动态适配的模式)
-            if (dto.getType() == ActionTypeEnum.GET) {
-                String value = this.store.get(dto.getKey());
-                LoggerUtil.debug(LOGGER, "[SocketServerHandler][run]: {}", "get action resp" + dto.toString());
-                RespDTO resp = new RespDTO(RespStatusTypeEnum.SUCCESS, value);
-                oos.writeObject(resp);
-                oos.flush();
-            }
-            if (dto.getType() == ActionTypeEnum.SET) {
-                this.store.set(dto.getKey(), dto.getValue());
-                LoggerUtil.debug(LOGGER, "[SocketServerHandler][run]: {}", "set action resp" + dto.toString());
-                RespDTO resp = new RespDTO(RespStatusTypeEnum.SUCCESS, null);
-                oos.writeObject(resp);
-                oos.flush();
-            }
-            if (dto.getType() == ActionTypeEnum.RM) {
-                this.store.rm(dto.getKey());
-            }
+            //采用命令处理工厂模式来动态处理命令
+            CommandHandler handler = CommandHandlerFactory.getHandler(dto.getType(),LOGGER);
+            handler.handle(dto, oos, this.store);
 
         } catch (IOException | ClassNotFoundException e) {
             e.printStackTrace();
