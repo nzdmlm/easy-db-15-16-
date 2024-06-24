@@ -16,6 +16,8 @@ import model.command.SetCommand;
 public class CommandUtil {
     public static final String TYPE = "type";
 
+    //Command接口类型
+    //根据value中TYPE来动态创建不同的Command对象
     public static Command jsonToCommand(JSONObject value){
         if (value.getString(TYPE).equals(CommandTypeEnum.SET.name())) {
             return value.toJavaObject(SetCommand.class);
