@@ -66,7 +66,7 @@ public class NormalStore implements Store {
     /**
      * 持久化阈值
      */
-    private final int storeThreshold = 100;
+    private final int storeThreshold = 10;
 
     public NormalStore(String dataDir) {
         this.dataDir = dataDir;
@@ -123,7 +123,6 @@ public class NormalStore implements Store {
             // TODO://先写内存表，内存表达到一定阀值再写进磁盘
 
             //添加
-            //内存表缓存设置为100条数据
             if(memTable.size() < storeThreshold){
                 memTable.put(key, command);
             }
@@ -139,17 +138,17 @@ public class NormalStore implements Store {
             // TODO://判断是否需要将内存表中的值写回table
 
             //添加
-            Set<String> set = memTable.keySet();
-            if(memTable.size() == storeThreshold){
-                for(String i : set){//i为key
-                    SetCommand command1 = (SetCommand) memTable.get(i);
-                    byte[] commandBytes1 = JSONObject.toJSONBytes(command);
+            if(memTable.size() >= storeThreshold){
+                for(Map.Entry<String,Command> entry : memTable.entrySet()){
+                    String key1 = entry.getKey();
+                    SetCommand command1 = (SetCommand) entry.getValue();
+                    byte[] commandBytes1 = JSONObject.toJSONBytes(command1);
 
                     RandomAccessFileUtil.writeInt(this.genFilePath(), commandBytes1.length);
                     int pos1 = RandomAccessFileUtil.write(this.genFilePath(), commandBytes1);
 
                     CommandPos cmdPos1 = new CommandPos(pos1, commandBytes1.length);
-                    index.put(i, cmdPos1);
+                    index.put(key1, cmdPos1);
                 }
                 memTable.clear();
             }
@@ -200,13 +199,13 @@ public class NormalStore implements Store {
             // TODO://先写内存表，内存表达到一定阀值再写进磁盘
 
             //添加
-            //内存表缓存设置为100条数据
             if(memTable.size() < storeThreshold){
                 memTable.put(key, command);
             }
             //截至
 
             // 写table（wal）文件
+//            RandomAccessFileUtil.writeInt(this.genFilePath(), commandBytes.length);
             int pos = RandomAccessFileUtil.write(this.genFilePath(), commandBytes);
             // 保存到memTable
 
@@ -217,16 +216,17 @@ public class NormalStore implements Store {
             // TODO://判断是否需要将内存表中的值写回table
 
             //添加
-            Set<String> set = memTable.keySet();
-            if(memTable.size() == storeThreshold){
-                for(String i : set){//i为key
-                    SetCommand command1 = (SetCommand) memTable.get(i);
-                    byte[] commandBytes1 = JSONObject.toJSONBytes(command);
+            if(memTable.size() >= storeThreshold){
+                for(Map.Entry<String,Command> entry : memTable.entrySet()){
+                    String key1 = entry.getKey();
+                    RmCommand command1 = (RmCommand) entry.getValue();
+                    byte[] commandBytes1 = JSONObject.toJSONBytes(command1);
 
+                    RandomAccessFileUtil.writeInt(this.genFilePath(), commandBytes1.length);
                     int pos1 = RandomAccessFileUtil.write(this.genFilePath(), commandBytes1);
 
                     CommandPos cmdPos1 = new CommandPos(pos1, commandBytes1.length);
-                    index.put(i, cmdPos1);
+                    index.put(key1, cmdPos1);
                 }
                 memTable.clear();
             }
