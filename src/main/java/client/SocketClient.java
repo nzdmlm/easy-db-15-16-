@@ -67,8 +67,14 @@ public class SocketClient implements Client {
             ActionDTO dto = new ActionDTO(ActionTypeEnum.RM, key, null);
             oos.writeObject(dto);
             oos.flush();
-            RespDTO resp = (RespDTO) ois.readObject();
-            System.out.println("resp data: "+ resp.toString());
+
+            if (socket.getInputStream().available() > 0) {
+                RespDTO resp = (RespDTO) ois.readObject();
+                System.out.println("resp data: " + resp.toString());
+            } else {
+                System.err.println("No response received from server.");
+            }
+
             // 接收响应数据
         } catch (IOException | ClassNotFoundException e) {
             e.printStackTrace();
