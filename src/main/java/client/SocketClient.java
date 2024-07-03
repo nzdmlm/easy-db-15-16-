@@ -52,6 +52,7 @@ public class SocketClient implements Client {
             RespDTO resp = (RespDTO) ois.readObject();
             System.out.println("resp data: "+ resp.toString());
             // 接收响应数据
+            return resp.getValue();
         } catch (IOException | ClassNotFoundException e) {
             e.printStackTrace();
         }
