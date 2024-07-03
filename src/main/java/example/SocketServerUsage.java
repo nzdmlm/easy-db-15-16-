@@ -12,6 +12,7 @@ import service.NormalStore;
 import service.Store;
 
 import java.io.File;
+import java.io.IOException;
 
 public class SocketServerUsage {
     public static void main(String[] args) {
@@ -21,5 +22,10 @@ public class SocketServerUsage {
         Store store = new NormalStore(dataDir);
         SocketServerController controller = new SocketServerController(host, port, store);
         controller.startServer();
+        try {
+            store.close();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 }
