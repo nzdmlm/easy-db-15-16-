@@ -8,17 +8,17 @@
 package service;
 
 import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONException;
 import com.alibaba.fastjson.JSONObject;
-import controller.SocketServerHandler;
+import com.alibaba.fastjson.JSONReader;
+import dto.IndexInfoDTO;
 import model.command.Command;
 import model.command.CommandPos;
 import model.command.RmCommand;
 import model.command.SetCommand;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import utils.CommandUtil;
-import utils.LoggerUtil;
-import utils.RandomAccessFileUtil;
+import utils.*;
 
 import java.io.File;
 import java.io.IOException;
@@ -27,15 +27,17 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
-import java.util.jar.JarEntry;
 
 public class NormalStore implements Store {
 
     public static final String TABLE = ".table";
+    public static final String TXT = ".txt";
     public static final String RW_MODE = "rw";
     public static final String NAME = "data";
+    public static final String LOGNAME = "wal";
     private final Logger LOGGER = LoggerFactory.getLogger(NormalStore.class);
     private final String logFormat = "[NormalStore][{}]: {}";
+    private static Map<String, IndexInfoDTO> map = new HashMap<>();
 
 
     /**
@@ -66,7 +68,8 @@ public class NormalStore implements Store {
     /**
      * 持久化阈值
      */
-    private final int storeThreshold = 10;
+    private final int storeThreshold = 5;
+
 
     public NormalStore(String dataDir) {
         this.dataDir = dataDir;
@@ -76,15 +79,35 @@ public class NormalStore implements Store {
 
         File file = new File(dataDir);
         if (!file.exists()) {
-            LoggerUtil.info(LOGGER,logFormat, "NormalStore","dataDir isn't exist,creating...");
+            LoggerUtil.info(LOGGER, logFormat, "NormalStore", "dataDir isn't exist,creating...");
             file.mkdirs();
         }
+
+        RedologUtil redologUtil = new RedologUtil(dataDir);
+        try {
+            redologUtil.flushWALToDataFile(memTable, index);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
         this.reloadIndex();
+
+
+        Thread dataFileMonitorThread = new Thread(new DataFileMonitorUtil(dataDir));
+        dataFileMonitorThread.setDaemon(true);
+        dataFileMonitorThread.start();
+
     }
 
-    public String genFilePath() {
-        return this.dataDir + File.separator + NAME + TABLE;
-    }
+
+
+        public String genFilePath () {
+            return this.dataDir + File.separator + NAME + TABLE;
+        }
+
+        public String genLogFilePath () {
+            return this.dataDir + File.separator + LOGNAME + TXT;
+        }
 
 
     public void reloadIndex() {
@@ -115,6 +138,15 @@ public class NormalStore implements Store {
 
     @Override
     public void set(String key, String value) {
+
+        RedologUtil redologUtil = new RedologUtil(dataDir);
+        try {
+            redologUtil.flushWALToDataFile(memTable, index);
+            this.reloadIndex();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
         try {
             SetCommand command = new SetCommand(key, value);
             byte[] commandBytes = JSONObject.toJSONBytes(command);
@@ -129,28 +161,33 @@ public class NormalStore implements Store {
             //截至
 
             // 写table（wal）日志文件
-            RandomAccessFileUtil.writeInt(this.genFilePath(), commandBytes.length);//先写命令数据长度
-            int pos = RandomAccessFileUtil.write(this.genFilePath(), commandBytes);//再写具体命令
+            RandomAccessFileUtil.writeInt(this.genLogFilePath(), commandBytes.length);
+            int pos = RandomAccessFileUtil.write(this.genLogFilePath(), commandBytes);
             // 保存到memTable
             // 添加索引
             CommandPos cmdPos = new CommandPos(pos, commandBytes.length);
             index.put(key, cmdPos);
             // TODO://判断是否需要将内存表中的值写回table
+            //写回磁盘
 
             //添加
             if(memTable.size() >= storeThreshold){
                 for(Map.Entry<String,Command> entry : memTable.entrySet()){
                     String key1 = entry.getKey();
-                    SetCommand command1 = (SetCommand) entry.getValue();
-                    byte[] commandBytes1 = JSONObject.toJSONBytes(command1);
+                    Command command1 = entry.getValue();
 
-                    RandomAccessFileUtil.writeInt(this.genFilePath(), commandBytes1.length);
-                    int pos1 = RandomAccessFileUtil.write(this.genFilePath(), commandBytes1);
+                    if(command1 instanceof SetCommand){
+                        byte[] commandBytes1 = JSONObject.toJSONBytes(command1);
 
-                    CommandPos cmdPos1 = new CommandPos(pos1, commandBytes1.length);
-                    index.put(key1, cmdPos1);
+                        RandomAccessFileUtil.writeInt(this.genFilePath(), commandBytes1.length);
+                        int pos1 = RandomAccessFileUtil.write(this.genFilePath(), commandBytes1);
+
+                        CommandPos cmdPos1 = new CommandPos(pos1, commandBytes1.length);
+                        index.put(key1, cmdPos1);
+                    }
                 }
                 memTable.clear();
+                cleanLog(this.genLogFilePath());
             }
             //截至
 
@@ -161,24 +198,70 @@ public class NormalStore implements Store {
         }
     }
 
+
+
     @Override
     public String get(String key) {
+
+        RedologUtil redologUtil = new RedologUtil(dataDir);
+        try {
+            redologUtil.flushWALToDataFile(memTable, index);
+            this.reloadIndex();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
+        boolean flag = true;
+
         try {
             indexLock.readLock().lock();
             // 从索引中获取信息
             CommandPos cmdPos = index.get(key);
             if (cmdPos == null) {
-                return null;
+                flag = false;
             }
-            byte[] commandBytes = RandomAccessFileUtil.readByIndex(this.genFilePath(), cmdPos.getPos(), cmdPos.getLen());
 
-            JSONObject value = JSONObject.parseObject(new String(commandBytes));
-            Command cmd = CommandUtil.jsonToCommand(value);
-            if (cmd instanceof SetCommand) {
-                return ((SetCommand) cmd).getValue();
-            }
-            if (cmd instanceof RmCommand) {
-                return null;
+            if (flag) {
+                byte[] commandBytes = RandomAccessFileUtil.readByIndex(this.genFilePath(), cmdPos.getPos(), cmdPos.getLen());
+
+                try {
+                    JSONObject value = JSONObject.parseObject(new String(commandBytes));
+                    Command cmd = CommandUtil.jsonToCommand(value);
+                    if (cmd instanceof SetCommand) {
+                        return ((SetCommand) cmd).getValue();
+                    }
+                    if (cmd instanceof RmCommand) {
+                        return null;
+                    }
+                } catch (JSONException e) {
+                    if (e.getMessage().contains("unterminated json string")) {
+                        // 检查 JSON 字符串是否正确终止
+                        String jsonString = new String(commandBytes);
+                        int lastCharIndex = jsonString.lastIndexOf('}');
+                        if (lastCharIndex != -1 && jsonString.charAt(lastCharIndex) != '}') {
+                            // 添加缺少的关闭括号
+                            jsonString += "}";
+                            commandBytes = jsonString.getBytes();
+                            JSONObject value = JSONObject.parseObject(new String(commandBytes));
+                            Command cmd = CommandUtil.jsonToCommand(value);
+                            if (cmd instanceof SetCommand) {
+                                return ((SetCommand) cmd).getValue();
+                            }
+                            if (cmd instanceof RmCommand) {
+                                return null;
+                            }
+                        }
+                    } else {
+                        JSONObject value = JSONObject.parseObject(new String(commandBytes));
+                        Command cmd = CommandUtil.jsonToCommand(value);
+                        if (cmd instanceof SetCommand) {
+                            return ((SetCommand) cmd).getValue();
+                        }
+                        if (cmd instanceof RmCommand) {
+                            return null;
+                        }
+                    }
+                }
             }
 
         } catch (Throwable t) {
@@ -186,11 +269,77 @@ public class NormalStore implements Store {
         } finally {
             indexLock.readLock().unlock();
         }
+
+        try {
+            indexLock.readLock().lock();
+            // 从索引中获取信息
+            IndexInfoDTO indexInfoDTO = map.get(key);
+            if (indexInfoDTO == null) {
+                return null;
+            }
+            String path = indexInfoDTO.getPath();
+            CommandPos commandpos = indexInfoDTO.getCommandpos();
+            byte[] commandBytes = RandomAccessFileUtil.readByIndex((dataDir + File.separator + path), commandpos.getPos(), commandpos.getLen());
+
+            try {
+                JSONObject value = JSONObject.parseObject(new String(commandBytes));
+                Command cmd = CommandUtil.jsonToCommand(value);
+                if (cmd instanceof SetCommand) {
+                    return ((SetCommand) cmd).getValue();
+                }
+                if (cmd instanceof RmCommand) {
+                    return null;
+                }
+            } catch (JSONException e) {
+                if (e.getMessage().contains("unterminated json string")) {
+                    // 检查 JSON 字符串是否正确终止
+                    String jsonString = new String(commandBytes);
+                    int lastCharIndex = jsonString.lastIndexOf('}');
+                    if (lastCharIndex != -1 && jsonString.charAt(lastCharIndex) != '}') {
+                        // 添加缺少的关闭括号
+                        jsonString += "}";
+                        commandBytes = jsonString.getBytes();
+                        JSONObject value = JSONObject.parseObject(new String(commandBytes));
+                        Command cmd = CommandUtil.jsonToCommand(value);
+                        if (cmd instanceof SetCommand) {
+                            return ((SetCommand) cmd).getValue();
+                        }
+                        if (cmd instanceof RmCommand) {
+                            return null;
+                        }
+                    }
+                } else {
+                    JSONObject value = JSONObject.parseObject(new String(commandBytes));
+                    Command cmd = CommandUtil.jsonToCommand(value);
+                    if (cmd instanceof SetCommand) {
+                        return ((SetCommand) cmd).getValue();
+                    }
+                    if (cmd instanceof RmCommand) {
+                        return null;
+                    }
+                }
+            }
+
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        } finally {
+            indexLock.readLock().unlock();
+        }
+
         return null;
     }
 
     @Override
     public void rm(String key) {
+
+        RedologUtil redologUtil = new RedologUtil(dataDir);
+        try {
+            redologUtil.flushWALToDataFile(memTable, index);
+            this.reloadIndex();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
         try {
             RmCommand command = new RmCommand(key);
             byte[] commandBytes = JSONObject.toJSONBytes(command);
@@ -205,8 +354,8 @@ public class NormalStore implements Store {
             //截至
 
             // 写table（wal）文件
-//            RandomAccessFileUtil.writeInt(this.genFilePath(), commandBytes.length);
-            int pos = RandomAccessFileUtil.write(this.genFilePath(), commandBytes);
+            RandomAccessFileUtil.writeInt(this.genLogFilePath(), commandBytes.length);
+            int pos = RandomAccessFileUtil.write(this.genLogFilePath(), commandBytes);
             // 保存到memTable
 
             // 添加索引
@@ -214,23 +363,27 @@ public class NormalStore implements Store {
             index.put(key, cmdPos);
 
             // TODO://判断是否需要将内存表中的值写回table
+            //写回磁盘
 
             //添加
             if(memTable.size() >= storeThreshold){
                 for(Map.Entry<String,Command> entry : memTable.entrySet()){
                     String key1 = entry.getKey();
-                    RmCommand command1 = (RmCommand) entry.getValue();
-                    byte[] commandBytes1 = JSONObject.toJSONBytes(command1);
+                    Command command1 = entry.getValue();
 
-                    RandomAccessFileUtil.writeInt(this.genFilePath(), commandBytes1.length);
-                    int pos1 = RandomAccessFileUtil.write(this.genFilePath(), commandBytes1);
+                    if(command1 instanceof RmCommand){
+                        byte[] commandBytes1 = JSONObject.toJSONBytes(command1);
 
-                    CommandPos cmdPos1 = new CommandPos(pos1, commandBytes1.length);
-                    index.put(key1, cmdPos1);
+                        RandomAccessFileUtil.writeInt(this.genFilePath(), commandBytes1.length);
+                        int pos1 = RandomAccessFileUtil.write(this.genFilePath(), commandBytes1);
+
+                        CommandPos cmdPos1 = new CommandPos(pos1, commandBytes1.length);
+                        index.put(key1, cmdPos1);
+                    }
                 }
                 memTable.clear();
+                cleanLog(this.genLogFilePath());
             }
-            //截至
 
         } catch (Throwable t) {
             throw new RuntimeException(t);
@@ -239,8 +392,13 @@ public class NormalStore implements Store {
         }
     }
 
+    public void cleanLog(String logFilePath) throws IOException {
+        RandomAccessFile logFile = new RandomAccessFile(logFilePath, RW_MODE);
+        logFile.setLength(0);
+    }
+
     @Override
     public void close() throws IOException {
-
     }
+
 }
