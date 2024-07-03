@@ -70,6 +70,12 @@ public class NormalStore implements Store {
      */
     private final int storeThreshold = 5;
 
+    public static void setMap(Map<String, IndexInfoDTO> map1) {
+        for(Map.Entry<String, IndexInfoDTO> entry : map1.entrySet()){
+            map.put(entry.getKey(), entry.getValue());
+        }
+    }
+
 
     public NormalStore(String dataDir) {
         this.dataDir = dataDir;
@@ -92,6 +98,11 @@ public class NormalStore implements Store {
 
         this.reloadIndex();
 
+        //固化数据建立映射在map中
+        List<String> list = listFiles();
+        for(String fileName : list) {
+            reloadIndexConsist(fileName);
+        }
 
         Thread dataFileMonitorThread = new Thread(new DataFileMonitorUtil(dataDir));
         dataFileMonitorThread.setDaemon(true);
@@ -99,15 +110,59 @@ public class NormalStore implements Store {
 
     }
 
+    //数据固化文件在数据库启动建立映射
+    public void reloadIndexConsist(String filePath) {
+        try {
+            RandomAccessFile file = new RandomAccessFile((dataDir + File.separator + filePath), RW_MODE);
+            long len = file.length();
+            long start = 0;
+            IndexInfoDTO indexInfoDTO = null;
+            file.seek(start);
+            while (start < len) {
+                int cmdLen = file.readInt();//从文件读取4个字节，返回4字节32位的数据
+                byte[] bytes = new byte[cmdLen];
+                file.read(bytes);
+                JSONObject value = JSON.parseObject(new String(bytes, StandardCharsets.UTF_8));
+                Command command = CommandUtil.jsonToCommand(value);
+                start += 4;
+                if (command != null) {
+                    CommandPos cmdPos = new CommandPos((int) start, cmdLen);
+                    indexInfoDTO = new IndexInfoDTO(filePath, cmdPos);
+                    map.put(command.getKey(), indexInfoDTO);
+                }
+                start += cmdLen;
+            }
+            file.seek(file.length());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        LoggerUtil.debug(LOGGER, logFormat, "reload index: "+index.toString());
+    }
 
 
-        public String genFilePath () {
+    public String genFilePath () {
             return this.dataDir + File.separator + NAME + TABLE;
         }
 
         public String genLogFilePath () {
             return this.dataDir + File.separator + LOGNAME + TXT;
         }
+
+    public List<String> listFiles(){
+        File file = new File(dataDir);
+        File[] files = file.listFiles();
+        List<String> list = new ArrayList<>();
+        int count = 1;
+        String regex = "data" + count + ".table";
+        for(File file1 : files){
+            if(file1.isFile() && file1.getName().matches(regex)){
+                list.add(file1.getName());
+                count++;
+                regex = "data"+ count +".table";
+            }
+        }
+        return list;
+    }
 
 
     public void reloadIndex() {
