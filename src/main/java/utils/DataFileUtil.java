@@ -66,7 +66,13 @@ public class DataFileUtil {
         File dataFile = new File(dataFileName);
         try {
             if (dataFile.length() >= MAX_FILE_SIZE) {
-                compressDataFile();
+                new Thread(() -> {
+                    try {
+                        compressDataFile();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }).start();
             }
         } finally {
             indexLock.writeLock().unlock();
